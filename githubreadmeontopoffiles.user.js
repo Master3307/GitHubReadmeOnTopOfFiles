@@ -2,7 +2,7 @@
 // @name         GitHub README before files
 // @namespace    https://github.com/
 // @version      5.0
-// @author       https://github.com/Master3307
+// @author       MrKoby07
 // @description  Moves the rendered repository README above the file list on GitHub repo home pages
 // @license      MIT
 // @match        https://github.com/*/*
