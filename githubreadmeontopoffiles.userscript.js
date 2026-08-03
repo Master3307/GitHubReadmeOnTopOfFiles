@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      4.0
+// @version      5.0
 // @description  Moves the rendered repository README above the file list on GitHub repo home pages
-// @license      MIT
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
 // @exclude      https://github.com/*/*/blob/*
@@ -31,7 +30,7 @@
 (function () {
   "use strict";
 
-  let rafId = 0;
+  let scheduled = false;
   let lastUrl = location.href;
 
   function isRepoHome() {
@@ -43,57 +42,80 @@
     return parts.length === 2;
   }
 
-  function getReadmeSection() {
-    const readme = document.querySelector("#readme");
-    if (!readme) return null;
-    return readme.closest("section") || readme.parentElement;
+  function getFilesTable() {
+    return document.querySelector('table[aria-labelledby="folders-and-files"]');
   }
 
-  function getFilesSection() {
-    const heading = [...document.querySelectorAll("h2, h3")].find((el) =>
-      /folders?\s+and\s+files/i.test(el.textContent || ""),
+  function getReadmeArticle() {
+    return document.querySelector(
+      ".OverviewRepoFiles-moduleBox1OXeac article.markdown-body, article.markdown-body",
     );
+  }
 
-    if (heading) {
-      return heading.closest("section, div");
-    }
+  function getFilesBlock() {
+    const table = getFilesTable();
+    if (!table) return null;
 
     return (
-      document
-        .querySelector('[aria-labelledby="folders-and-files"]')
-        ?.closest("section, div") ||
-      document
-        .querySelector('table[aria-labelledby="folders-and-files"]')
-        ?.closest("section, div") ||
-      document.querySelector('[role="tree"]')?.closest("section, div") ||
-      null
+      table.closest(".OverviewContent-moduleBox11F19kY") ||
+      table.closest("[data-hpc]") ||
+      table.closest("div")
     );
+  }
+
+  function getReadmeBlock() {
+    const article = getReadmeArticle();
+    if (!article) return null;
+
+    return (
+      article.closest(".OverviewRepoFiles-moduleBox1OXeac") ||
+      article.closest('[class*="OverviewRepoFiles-module"]') ||
+      article.closest("section") ||
+      article.closest("div")
+    );
+  }
+
+  function getCommonContainer(a, b) {
+    if (!a || !b) return null;
+
+    let current = a.parentElement;
+    while (current) {
+      if (current.contains(b)) return current;
+      current = current.parentElement;
+    }
+    return null;
   }
 
   function moveReadme() {
     if (!isRepoHome()) return;
 
-    const readmeSection = getReadmeSection();
-    const filesSection = getFilesSection();
+    const filesTable = getFilesTable();
+    const readmeArticle = getReadmeArticle();
+    if (!filesTable || !readmeArticle) return;
 
-    if (!readmeSection || !filesSection) return;
-    if (!readmeSection.parentElement || !filesSection.parentElement) return;
-    if (readmeSection === filesSection) return;
-    if (readmeSection.parentElement !== filesSection.parentElement) return;
+    const filesBlock = getFilesBlock();
+    const readmeBlock = getReadmeBlock();
+    if (!filesBlock || !readmeBlock) return;
+    if (filesBlock === readmeBlock) return;
 
-    const relation = filesSection.compareDocumentPosition(readmeSection);
+    const commonContainer = getCommonContainer(filesBlock, readmeBlock);
+    if (!commonContainer) return;
+
+    const relation = filesBlock.compareDocumentPosition(readmeBlock);
     const readmeAlreadyBefore = Boolean(
       relation & Node.DOCUMENT_POSITION_PRECEDING,
     );
     if (readmeAlreadyBefore) return;
 
-    filesSection.parentElement.insertBefore(readmeSection, filesSection);
+    commonContainer.insertBefore(readmeBlock, filesBlock);
   }
 
   function scheduleMove() {
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => {
-      rafId = 0;
+    if (scheduled) return;
+    scheduled = true;
+
+    requestAnimationFrame(() => {
+      scheduled = false;
       moveReadme();
     });
   }
