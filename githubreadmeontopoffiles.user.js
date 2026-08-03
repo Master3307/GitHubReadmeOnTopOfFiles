@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.0
+// @version      5.0.0
 // @author       MrKoby07
 // @description  Moves the rendered repository README above the file list on GitHub repo home pages
 // @license      MIT
+// @sandbox      DOM
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
 // @exclude      https://github.com/*/*/blob/*
