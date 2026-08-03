@@ -2,6 +2,7 @@
 // @name         GitHub README before files
 // @namespace    https://github.com/
 // @version      5.0
+// @author       https://github.com/Master3307
 // @description  Moves the rendered repository README above the file list on GitHub repo home pages
 // @license      MIT
 // @match        https://github.com/*/*
@@ -26,6 +27,11 @@
 // @exclude      https://github.com/*/*/compare/*
 // @run-at       document-idle
 // @grant        none
+// @homepageURL  https://github.com/Master3307/GitHubReadmeOnTopOfFiles
+// @supportURL   https://github.com/Master3307/GitHubReadmeOnTopOfFiles/issues
+// @icon         https://github.com/favicon.ico
+// @updateURL    https://raw.githubusercontent.com/Master3307/GitHubReadmeOnTopOfFiles/refs/heads/master/githubreadmeontopoffiles.userscript.js
+// @downloadURL  https://raw.githubusercontent.com/Master3307/GitHubReadmeOnTopOfFiles/refs/heads/master/githubreadmeontopoffiles.userscript.js
 // ==/UserScript==
 
 (function () {
