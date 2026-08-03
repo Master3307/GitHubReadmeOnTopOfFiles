@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      3.0
-// @description  Moves the repository README above the file list on GitHub repository home pages
+// @version      4.0
+// @description  Moves the rendered repository README above the file list on GitHub repo home pages
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
 // @exclude      https://github.com/*/*/blob/*
@@ -30,80 +30,69 @@
 (function () {
   "use strict";
 
-  let scheduled = false;
+  let rafId = 0;
   let lastUrl = location.href;
 
-  function isRepoRootPath(pathname) {
-    const clean = pathname.replace(/^\/+|\/+$/g, "");
-    const parts = clean.split("/").filter(Boolean);
+  function isRepoHome() {
+    if (location.hostname !== "github.com") return false;
+    const parts = location.pathname
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean);
     return parts.length === 2;
   }
 
-  function getMain() {
-    return document.querySelector("main");
+  function getReadmeSection() {
+    const readme = document.querySelector("#readme");
+    if (!readme) return null;
+    return readme.closest("section") || readme.parentElement;
   }
 
-  function getReadme(main) {
-    return main?.querySelector("#readme") || null;
-  }
+  function getFilesSection() {
+    const heading = [...document.querySelectorAll("h2, h3")].find((el) =>
+      /folders?\s+and\s+files/i.test(el.textContent || ""),
+    );
 
-  function getFiles(main) {
+    if (heading) {
+      return heading.closest("section, div");
+    }
+
     return (
-      main?.querySelector('[aria-labelledby="folders-and-files"]') ||
-      main?.querySelector('table[aria-labelledby="folders-and-files"]') ||
-      main?.querySelector('[aria-labelledby="files"]') ||
-      main?.querySelector(".js-navigation-container") ||
+      document
+        .querySelector('[aria-labelledby="folders-and-files"]')
+        ?.closest("section, div") ||
+      document
+        .querySelector('table[aria-labelledby="folders-and-files"]')
+        ?.closest("section, div") ||
+      document.querySelector('[role="tree"]')?.closest("section, div") ||
       null
     );
   }
 
-  function getMovableContainer(node) {
-    return node?.closest("section, div[data-testid], div.Box, div") || null;
-  }
-
-  function isEligiblePage() {
-    if (location.hostname !== "github.com") return false;
-    if (!isRepoRootPath(location.pathname)) return false;
-
-    const main = getMain();
-    if (!main) return false;
-
-    const readme = getReadme(main);
-    const files = getFiles(main);
-
-    return Boolean(readme && files);
-  }
-
   function moveReadme() {
-    if (!isEligiblePage()) return;
+    if (!isRepoHome()) return;
 
-    const main = getMain();
-    const readme = getReadme(main);
-    const files = getFiles(main);
+    const readmeSection = getReadmeSection();
+    const filesSection = getFilesSection();
 
-    if (!readme || !files) return;
+    if (!readmeSection || !filesSection) return;
+    if (!readmeSection.parentElement || !filesSection.parentElement) return;
+    if (readmeSection === filesSection) return;
+    if (readmeSection.parentElement !== filesSection.parentElement) return;
 
-    const readmeBox = getMovableContainer(readme);
-    const filesBox = getMovableContainer(files);
+    const relation = filesSection.compareDocumentPosition(readmeSection);
+    const readmeAlreadyBefore = Boolean(
+      relation & Node.DOCUMENT_POSITION_PRECEDING,
+    );
+    if (readmeAlreadyBefore) return;
 
-    if (!readmeBox || !filesBox) return;
-    if (!filesBox.parentElement) return;
-    if (readmeBox === filesBox) return;
-    if (readmeBox.parentElement !== filesBox.parentElement) return;
-
-    const relation = filesBox.compareDocumentPosition(readmeBox);
-    const alreadyBefore = Boolean(relation & Node.DOCUMENT_POSITION_PRECEDING);
-
-    if (alreadyBefore) return;
-
-    filesBox.parentElement.insertBefore(readmeBox, filesBox);
+    filesSection.parentElement.insertBefore(readmeSection, filesSection);
   }
 
   function scheduleMove() {
-    if (scheduled) return;
-    scheduled = true;
-    requestAnimationFrame(() => {
-      scheduled = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
       moveReadme();
     });
   }
@@ -121,6 +110,6 @@
   });
 
   window.addEventListener("load", scheduleMove, { once: true });
-  document.addEventListener("DOMContentLoaded", scheduleMove, { once: true });
+  document.addEventListener("readystatechange", scheduleMove);
   scheduleMove();
 })();
