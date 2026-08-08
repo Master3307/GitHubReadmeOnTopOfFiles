@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.2.0
+// @version      5.3.0
 // @author       MrKoby07
-// @description  Visually moves the rendered repository README above the file list on GitHub repo home pages (no DOM re-parenting)
+// @description  Moves the entire rendered README block (several DOM levels up) above the entire file list block on GitHub repo home pages
 // @license      MIT
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
@@ -37,7 +37,13 @@
 (() => {
   "use strict";
 
-  const READY_CLASS = "readme-order-fixed";
+  // Tune these two numbers if GitHub tweaks its markup depth.
+  // They control how many parentElement hops we take from the
+  // <article class="markdown-body"> and from the files <table>
+  // before treating that ancestor as the "block" to move/anchor on.
+  const README_LEVELS_UP = 4;
+  const FILES_LEVELS_UP = 3;
+
   let scheduled = false;
 
   function isRepoHome() {
@@ -56,62 +62,56 @@
     return document.querySelector("article.markdown-body");
   }
 
-  function getLowestCommonAncestor(a, b) {
-    const ancestors = new Set();
-    for (let n = a; n; n = n.parentElement) ancestors.add(n);
-    for (let n = b; n; n = n.parentElement) if (ancestors.has(n)) return n;
-    return null;
-  }
-
-  function getDirectChildOf(parent, child) {
-    let node = child;
-    while (node?.parentElement && node.parentElement !== parent) {
+  function climb(el, levels) {
+    let node = el;
+    for (let i = 0; i < levels && node?.parentElement; i++) {
       node = node.parentElement;
     }
-    return node?.parentElement === parent ? node : null;
+    return node;
   }
-  function applyOrder() {
+
+  function moveReadme() {
     if (!isRepoHome()) return;
 
     const filesTable = getFilesTable();
     const readmeArticle = getReadmeArticle();
     if (!filesTable || !readmeArticle) return;
 
-    const container = getLowestCommonAncestor(filesTable, readmeArticle);
-    if (!container) return;
+    const readmeBlock = climb(readmeArticle, README_LEVELS_UP);
+    const filesBlock = climb(filesTable, FILES_LEVELS_UP);
+    if (!readmeBlock || !filesBlock) return;
+    if (readmeBlock === filesBlock) return;
+    if (readmeBlock.contains(filesBlock) || filesBlock.contains(readmeBlock))
+      return;
 
-    const filesBlock = getDirectChildOf(container, filesTable);
-    const readmeBlock = getDirectChildOf(container, readmeArticle);
-    if (!filesBlock || !readmeBlock || filesBlock === readmeBlock) return;
+    const filesParent = filesBlock.parentElement;
+    if (!filesParent) return;
 
-    if (!container.classList.contains(READY_CLASS)) {
-      container.classList.add(READY_CLASS);
-      container.style.display = "flex";
-      container.style.flexDirection = "column";
-    }
+    // Only reinsert if the README block isn't already immediately before
+    // the files block, to avoid fighting React re-renders every tick.
+    if (readmeBlock.nextElementSibling === filesBlock) return;
 
-    readmeBlock.style.order = "-1";
-    filesBlock.style.order = "1";
+    filesParent.insertBefore(readmeBlock, filesBlock);
   }
 
-  function scheduleApply() {
+  function scheduleMove() {
     if (scheduled) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
-      applyOrder();
+      moveReadme();
     });
   }
 
-  const observer = new MutationObserver(scheduleApply);
+  const observer = new MutationObserver(scheduleMove);
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
 
-  document.addEventListener("turbo:render", scheduleApply);
-  document.addEventListener("pjax:end", scheduleApply);
-  window.addEventListener("pageshow", scheduleApply);
+  document.addEventListener("turbo:render", scheduleMove);
+  document.addEventListener("pjax:end", scheduleMove);
+  window.addEventListener("pageshow", scheduleMove);
 
-  scheduleApply();
+  scheduleMove();
 })();
