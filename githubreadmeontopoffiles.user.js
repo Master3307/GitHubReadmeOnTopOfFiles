@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.1.0
+// @version      5.2.0
 // @author       MrKoby07
-// @description  Moves the rendered repository README above the complete files section on GitHub repo home pages
+// @description  Visually moves the rendered repository README above the file list on GitHub repo home pages (no DOM re-parenting)
 // @license      MIT
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
@@ -37,25 +37,14 @@
 (() => {
   "use strict";
 
+  const READY_CLASS = "readme-order-fixed";
   let scheduled = false;
-
-  const style = document.createElement("style");
-  style.textContent = `
-    .readme-on-top-files-block:has(
-      button[aria-label="Add file"][aria-expanded="true"]
-    ) {
-      position: relative !important;
-      z-index: 10 !important;
-    }
-  `;
-  document.documentElement.append(style);
 
   function isRepoHome() {
     const parts = location.pathname
       .replace(/^\/+|\/+$/g, "")
       .split("/")
       .filter(Boolean);
-
     return location.hostname === "github.com" && parts.length === 2;
   }
 
@@ -69,87 +58,60 @@
 
   function getLowestCommonAncestor(a, b) {
     const ancestors = new Set();
-
-    for (let node = a; node; node = node.parentElement) {
-      ancestors.add(node);
-    }
-
-    for (let node = b; node; node = node.parentElement) {
-      if (ancestors.has(node)) return node;
-    }
-
+    for (let n = a; n; n = n.parentElement) ancestors.add(n);
+    for (let n = b; n; n = n.parentElement) if (ancestors.has(n)) return n;
     return null;
   }
 
   function getDirectChildOf(parent, child) {
     let node = child;
-
     while (node?.parentElement && node.parentElement !== parent) {
       node = node.parentElement;
     }
-
     return node?.parentElement === parent ? node : null;
   }
+  function applyOrder() {
+    if (!isRepoHome()) return;
 
-  function getBlocks() {
     const filesTable = getFilesTable();
     const readmeArticle = getReadmeArticle();
-
-    if (!filesTable || !readmeArticle) return null;
+    if (!filesTable || !readmeArticle) return;
 
     const container = getLowestCommonAncestor(filesTable, readmeArticle);
-    if (!container) return null;
+    if (!container) return;
 
     const filesBlock = getDirectChildOf(container, filesTable);
     const readmeBlock = getDirectChildOf(container, readmeArticle);
+    if (!filesBlock || !readmeBlock || filesBlock === readmeBlock) return;
 
-    if (!filesBlock || !readmeBlock || filesBlock === readmeBlock) {
-      return null;
+    if (!container.classList.contains(READY_CLASS)) {
+      container.classList.add(READY_CLASS);
+      container.style.display = "flex";
+      container.style.flexDirection = "column";
     }
 
-    return { container, filesBlock, readmeBlock };
+    readmeBlock.style.order = "-1";
+    filesBlock.style.order = "1";
   }
 
-  function moveReadme() {
-    if (!isRepoHome()) return;
-
-    const blocks = getBlocks();
-    if (!blocks) return;
-
-    const { container, filesBlock, readmeBlock } = blocks;
-
-    filesBlock.classList.add("readme-on-top-files-block");
-
-    const readmeIsAlreadyBeforeFiles = Boolean(
-      filesBlock.compareDocumentPosition(readmeBlock) &
-      Node.DOCUMENT_POSITION_PRECEDING,
-    );
-
-    if (!readmeIsAlreadyBeforeFiles) {
-      container.insertBefore(readmeBlock, filesBlock);
-    }
-  }
-
-  function scheduleMove() {
+  function scheduleApply() {
     if (scheduled) return;
-
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
-      moveReadme();
+      applyOrder();
     });
   }
 
-  const observer = new MutationObserver(scheduleMove);
-
+  const observer = new MutationObserver(scheduleApply);
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
 
-  document.addEventListener("turbo:render", scheduleMove);
-  document.addEventListener("pjax:end", scheduleMove);
-  window.addEventListener("pageshow", scheduleMove);
+  document.addEventListener("turbo:render", scheduleApply);
+  document.addEventListener("pjax:end", scheduleApply);
+  window.addEventListener("pageshow", scheduleApply);
 
-  scheduleMove();
+  scheduleApply();
 })();
