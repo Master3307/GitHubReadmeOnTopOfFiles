@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.3.0
+// @version      5.4.0
 // @author       MrKoby07
-// @description  Moves the entire rendered README block (several DOM levels up) above the entire file list block on GitHub repo home pages
+// @description  Moves the entire rendered README section (nav, edit button, article) above the entire file list section on GitHub repo home pages
 // @license      MIT
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
@@ -37,13 +37,6 @@
 (() => {
   "use strict";
 
-  // Tune these two numbers if GitHub tweaks its markup depth.
-  // They control how many parentElement hops we take from the
-  // <article class="markdown-body"> and from the files <table>
-  // before treating that ancestor as the "block" to move/anchor on.
-  const README_LEVELS_UP = 4;
-  const FILES_LEVELS_UP = 3;
-
   let scheduled = false;
 
   function isRepoHome() {
@@ -54,44 +47,80 @@
     return location.hostname === "github.com" && parts.length === 2;
   }
 
+  // Stable anchor: the "Folders and files" heading always has this id.
   function getFilesTable() {
-    return document.querySelector('table[aria-labelledby="folders-and-files"]');
+    const heading = document.getElementById("folders-and-files");
+    return (
+      heading?.closest("table") ||
+      document.querySelector('table[aria-labelledby="folders-and-files"]')
+    );
   }
 
-  function getReadmeArticle() {
-    return document.querySelector("article.markdown-body");
+  // Stable anchor: the README section's outer wrapper is the OUTERMOST
+  // element whose class starts with "OverviewRepoFiles-module". It contains
+  // the file-type nav (README/LICENSE tabs), the edit-pencil slot, and the
+  // markdown article as one unit — nothing gets left behind.
+  function getReadmeBlock() {
+    const candidates = Array.from(
+      document.querySelectorAll('[class*="OverviewRepoFiles-module"]'),
+    );
+    if (!candidates.length) return null;
+
+    // Keep only nodes not nested inside another candidate.
+    const outermost = candidates.filter(
+      (el) => !candidates.some((other) => other !== el && other.contains(el)),
+    );
+
+    // Prefer the one that actually contains a markdown article.
+    return (
+      outermost.find((el) => el.querySelector("article.markdown-body")) ||
+      outermost[0] ||
+      null
+    );
   }
 
-  function climb(el, levels) {
-    let node = el;
-    for (let i = 0; i < levels && node?.parentElement; i++) {
+  function getDirectChildOf(parent, child) {
+    let node = child;
+    while (node?.parentElement && node.parentElement !== parent) {
       node = node.parentElement;
     }
-    return node;
+    return node?.parentElement === parent ? node : null;
+  }
+
+  function getLowestCommonAncestor(a, b) {
+    const ancestors = new Set();
+    for (let n = a; n; n = n.parentElement) ancestors.add(n);
+    for (let n = b; n; n = n.parentElement) if (ancestors.has(n)) return n;
+    return null;
   }
 
   function moveReadme() {
     if (!isRepoHome()) return;
 
     const filesTable = getFilesTable();
-    const readmeArticle = getReadmeArticle();
-    if (!filesTable || !readmeArticle) return;
+    const readmeBlock = getReadmeBlock();
+    if (!filesTable || !readmeBlock) return;
 
-    const readmeBlock = climb(readmeArticle, README_LEVELS_UP);
-    const filesBlock = climb(filesTable, FILES_LEVELS_UP);
-    if (!readmeBlock || !filesBlock) return;
-    if (readmeBlock === filesBlock) return;
-    if (readmeBlock.contains(filesBlock) || filesBlock.contains(readmeBlock))
+    const container = getLowestCommonAncestor(filesTable, readmeBlock);
+    if (!container) return;
+
+    const filesBlock = getDirectChildOf(container, filesTable);
+    const readmeBlockDirect = getDirectChildOf(container, readmeBlock);
+    if (!filesBlock || !readmeBlockDirect) return;
+    if (filesBlock === readmeBlockDirect) return;
+    if (
+      filesBlock.contains(readmeBlockDirect) ||
+      readmeBlockDirect.contains(filesBlock)
+    )
       return;
 
-    const filesParent = filesBlock.parentElement;
-    if (!filesParent) return;
+    const alreadyBefore = Boolean(
+      filesBlock.compareDocumentPosition(readmeBlockDirect) &
+      Node.DOCUMENT_POSITION_PRECEDING,
+    );
+    if (alreadyBefore) return;
 
-    // Only reinsert if the README block isn't already immediately before
-    // the files block, to avoid fighting React re-renders every tick.
-    if (readmeBlock.nextElementSibling === filesBlock) return;
-
-    filesParent.insertBefore(readmeBlock, filesBlock);
+    container.insertBefore(readmeBlockDirect, filesBlock);
   }
 
   function scheduleMove() {
