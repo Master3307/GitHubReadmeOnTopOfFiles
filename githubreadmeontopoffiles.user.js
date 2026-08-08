@@ -1,11 +1,10 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.0.0
+// @version      5.1.0
 // @author       MrKoby07
-// @description  Moves the rendered repository README above the file list on GitHub repo home pages
+// @description  Moves the rendered repository README above the complete files section on GitHub repo home pages
 // @license      MIT
-// @sandbox      DOM
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
 // @exclude      https://github.com/*/*/blob/*
@@ -35,19 +34,29 @@
 // @downloadURL  https://raw.githubusercontent.com/Master3307/GitHubReadmeOnTopOfFiles/refs/heads/master/githubreadmeontopoffiles.userscript.js
 // ==/UserScript==
 
-(function () {
+(() => {
   "use strict";
 
   let scheduled = false;
-  let lastUrl = location.href;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    .readme-on-top-files-block:has(
+      button[aria-label="Add file"][aria-expanded="true"]
+    ) {
+      position: relative !important;
+      z-index: 10 !important;
+    }
+  `;
+  document.documentElement.append(style);
 
   function isRepoHome() {
-    if (location.hostname !== "github.com") return false;
     const parts = location.pathname
       .replace(/^\/+|\/+$/g, "")
       .split("/")
       .filter(Boolean);
-    return parts.length === 2;
+
+    return location.hostname === "github.com" && parts.length === 2;
   }
 
   function getFilesTable() {
@@ -55,92 +64,92 @@
   }
 
   function getReadmeArticle() {
-    return document.querySelector(
-      ".OverviewRepoFiles-moduleBox1OXeac article.markdown-body, article.markdown-body",
-    );
+    return document.querySelector("article.markdown-body");
   }
 
-  function getFilesBlock() {
-    const table = getFilesTable();
-    if (!table) return null;
+  function getLowestCommonAncestor(a, b) {
+    const ancestors = new Set();
 
-    return (
-      table.closest(".OverviewContent-moduleBox11F19kY") ||
-      table.closest("[data-hpc]") ||
-      table.closest("div")
-    );
-  }
-
-  function getReadmeBlock() {
-    const article = getReadmeArticle();
-    if (!article) return null;
-
-    return (
-      article.closest(".OverviewRepoFiles-moduleBox1OXeac") ||
-      article.closest('[class*="OverviewRepoFiles-module"]') ||
-      article.closest("section") ||
-      article.closest("div")
-    );
-  }
-
-  function getCommonContainer(a, b) {
-    if (!a || !b) return null;
-
-    let current = a.parentElement;
-    while (current) {
-      if (current.contains(b)) return current;
-      current = current.parentElement;
+    for (let node = a; node; node = node.parentElement) {
+      ancestors.add(node);
     }
+
+    for (let node = b; node; node = node.parentElement) {
+      if (ancestors.has(node)) return node;
+    }
+
     return null;
+  }
+
+  function getDirectChildOf(parent, child) {
+    let node = child;
+
+    while (node?.parentElement && node.parentElement !== parent) {
+      node = node.parentElement;
+    }
+
+    return node?.parentElement === parent ? node : null;
+  }
+
+  function getBlocks() {
+    const filesTable = getFilesTable();
+    const readmeArticle = getReadmeArticle();
+
+    if (!filesTable || !readmeArticle) return null;
+
+    const container = getLowestCommonAncestor(filesTable, readmeArticle);
+    if (!container) return null;
+
+    const filesBlock = getDirectChildOf(container, filesTable);
+    const readmeBlock = getDirectChildOf(container, readmeArticle);
+
+    if (!filesBlock || !readmeBlock || filesBlock === readmeBlock) {
+      return null;
+    }
+
+    return { container, filesBlock, readmeBlock };
   }
 
   function moveReadme() {
     if (!isRepoHome()) return;
 
-    const filesTable = getFilesTable();
-    const readmeArticle = getReadmeArticle();
-    if (!filesTable || !readmeArticle) return;
+    const blocks = getBlocks();
+    if (!blocks) return;
 
-    const filesBlock = getFilesBlock();
-    const readmeBlock = getReadmeBlock();
-    if (!filesBlock || !readmeBlock) return;
-    if (filesBlock === readmeBlock) return;
+    const { container, filesBlock, readmeBlock } = blocks;
 
-    const commonContainer = getCommonContainer(filesBlock, readmeBlock);
-    if (!commonContainer) return;
+    filesBlock.classList.add("readme-on-top-files-block");
 
-    const relation = filesBlock.compareDocumentPosition(readmeBlock);
-    const readmeAlreadyBefore = Boolean(
-      relation & Node.DOCUMENT_POSITION_PRECEDING,
+    const readmeIsAlreadyBeforeFiles = Boolean(
+      filesBlock.compareDocumentPosition(readmeBlock) &
+      Node.DOCUMENT_POSITION_PRECEDING,
     );
-    if (readmeAlreadyBefore) return;
 
-    commonContainer.insertBefore(readmeBlock, filesBlock);
+    if (!readmeIsAlreadyBeforeFiles) {
+      container.insertBefore(readmeBlock, filesBlock);
+    }
   }
 
   function scheduleMove() {
     if (scheduled) return;
-    scheduled = true;
 
+    scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
       moveReadme();
     });
   }
 
-  const observer = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-    }
-    scheduleMove();
-  });
+  const observer = new MutationObserver(scheduleMove);
 
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
 
-  window.addEventListener("load", scheduleMove, { once: true });
-  document.addEventListener("readystatechange", scheduleMove);
+  document.addEventListener("turbo:render", scheduleMove);
+  document.addEventListener("pjax:end", scheduleMove);
+  window.addEventListener("pageshow", scheduleMove);
+
   scheduleMove();
 })();
