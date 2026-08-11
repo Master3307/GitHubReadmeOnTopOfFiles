@@ -6,3 +6,6 @@
 - [Install (Raw)](https://github.com/Master3307/GitHubReadmeOnTopOfFiles/raw/refs/heads/master/githubreadmeontopoffiles.user.js)
 - [Greasy Fork](https://greasyfork.org/en/scripts/589696-github-readme-before-files)
 - [OpenUserJS](https://openuserjs.org/scripts/MrKoby07/GitHub_README_before_files)
+
+<strong>📦・Related</strong>
+- [GitHub Repo Card In About Sidebar](https://github.com/Master3307/GitHubRepoCardInAboutSidebar)
