@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.5.0
+// @version      5.7.0
 // @author       MrKoby07
 // @description  Moves the entire rendered README section above the file list on GitHub repository home pages
 // @license      MIT
@@ -39,11 +39,36 @@
 
   const RETRY_ATTEMPTS = 25;
   const RETRY_DELAY_MS = 100;
+  const README_CLASS = "gh-readme-before-files";
 
   let scheduled = false;
   let retryTimer = null;
   let observerTimer = null;
   let navigationId = 0;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    .${README_CLASS} {
+      position: relative !important;
+      z-index: 0 !important;
+      isolation: auto !important;
+    }
+
+    /* Keep GitHub menus, dialogs, and popover portals above page content. */
+    details[open] > details-menu,
+    details[open] > details-dialog,
+    details-menu,
+    details-dialog,
+    .Overlay,
+    .Popover,
+    [data-target="action-menu.menu"],
+    [popover]:popover-open,
+    [data-portal-root],
+    [data-target="portal-root"] {
+      z-index: 1000 !important;
+    }
+  `;
+  (document.head || document.documentElement).append(style);
 
   function isRepoHome() {
     const parts = location.pathname
@@ -137,6 +162,8 @@
     ) {
       return false;
     }
+
+    readmeBlockDirect.classList.add(README_CLASS);
 
     const readmeIsBeforeFiles = Boolean(
       filesBlock.compareDocumentPosition(readmeBlockDirect) &
