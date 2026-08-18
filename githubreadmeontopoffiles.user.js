@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      5.4.0
+// @version      5.5.0
 // @author       MrKoby07
-// @description  Moves the entire rendered README section (nav, edit button, article) above the entire file list section on GitHub repo home pages
+// @description  Moves the entire rendered README section above the file list on GitHub repository home pages
 // @license      MIT
 // @match        https://github.com/*/*
 // @match        https://github.com/*/*/
@@ -37,43 +37,54 @@
 (() => {
   "use strict";
 
+  const RETRY_ATTEMPTS = 25;
+  const RETRY_DELAY_MS = 100;
+
   let scheduled = false;
+  let retryTimer = null;
+  let observerTimer = null;
+  let navigationId = 0;
 
   function isRepoHome() {
     const parts = location.pathname
       .replace(/^\/+|\/+$/g, "")
       .split("/")
       .filter(Boolean);
+
     return location.hostname === "github.com" && parts.length === 2;
   }
 
-  // Stable anchor: the "Folders and files" heading always has this id.
+  function getRepositoryPath() {
+    return location.pathname.replace(/\/$/, "");
+  }
+
   function getFilesTable() {
     const heading = document.getElementById("folders-and-files");
+
     return (
       heading?.closest("table") ||
       document.querySelector('table[aria-labelledby="folders-and-files"]')
     );
   }
 
-  // Stable anchor: the README section's outer wrapper is the OUTERMOST
-  // element whose class starts with "OverviewRepoFiles-module". It contains
-  // the file-type nav (README/LICENSE tabs), the edit-pencil slot, and the
-  // markdown article as one unit — nothing gets left behind.
   function getReadmeBlock() {
-    const candidates = Array.from(
-      document.querySelectorAll('[class*="OverviewRepoFiles-module"]'),
-    );
+    const candidates = [
+      ...document.querySelectorAll('[class*="OverviewRepoFiles-module"]'),
+    ];
+
     if (!candidates.length) return null;
 
-    // Keep only nodes not nested inside another candidate.
     const outermost = candidates.filter(
-      (el) => !candidates.some((other) => other !== el && other.contains(el)),
+      (element) =>
+        !candidates.some(
+          (other) => other !== element && other.contains(element),
+        ),
     );
 
-    // Prefer the one that actually contains a markdown article.
     return (
-      outermost.find((el) => el.querySelector("article.markdown-body")) ||
+      outermost.find((element) =>
+        element.querySelector("article.markdown-body"),
+      ) ||
       outermost[0] ||
       null
     );
@@ -81,50 +92,66 @@
 
   function getDirectChildOf(parent, child) {
     let node = child;
+
     while (node?.parentElement && node.parentElement !== parent) {
       node = node.parentElement;
     }
+
     return node?.parentElement === parent ? node : null;
   }
 
   function getLowestCommonAncestor(a, b) {
     const ancestors = new Set();
-    for (let n = a; n; n = n.parentElement) ancestors.add(n);
-    for (let n = b; n; n = n.parentElement) if (ancestors.has(n)) return n;
+
+    for (let node = a; node; node = node.parentElement) {
+      ancestors.add(node);
+    }
+
+    for (let node = b; node; node = node.parentElement) {
+      if (ancestors.has(node)) return node;
+    }
+
     return null;
   }
 
   function moveReadme() {
-    if (!isRepoHome()) return;
+    if (!isRepoHome()) return false;
 
     const filesTable = getFilesTable();
     const readmeBlock = getReadmeBlock();
-    if (!filesTable || !readmeBlock) return;
+
+    if (!filesTable || !readmeBlock) return false;
 
     const container = getLowestCommonAncestor(filesTable, readmeBlock);
-    if (!container) return;
+    if (!container) return false;
 
     const filesBlock = getDirectChildOf(container, filesTable);
     const readmeBlockDirect = getDirectChildOf(container, readmeBlock);
-    if (!filesBlock || !readmeBlockDirect) return;
-    if (filesBlock === readmeBlockDirect) return;
+
+    if (!filesBlock || !readmeBlockDirect) return false;
+    if (filesBlock === readmeBlockDirect) return false;
+
     if (
       filesBlock.contains(readmeBlockDirect) ||
       readmeBlockDirect.contains(filesBlock)
-    )
-      return;
+    ) {
+      return false;
+    }
 
-    const alreadyBefore = Boolean(
+    const readmeIsBeforeFiles = Boolean(
       filesBlock.compareDocumentPosition(readmeBlockDirect) &
       Node.DOCUMENT_POSITION_PRECEDING,
     );
-    if (alreadyBefore) return;
+
+    if (readmeIsBeforeFiles) return true;
 
     container.insertBefore(readmeBlockDirect, filesBlock);
+    return true;
   }
 
   function scheduleMove() {
     if (scheduled) return;
+
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
@@ -132,15 +159,71 @@
     });
   }
 
-  const observer = new MutationObserver(scheduleMove);
+  function scheduleMoveWithRetry({
+    attempts = RETRY_ATTEMPTS,
+    delay = RETRY_DELAY_MS,
+  } = {}) {
+    clearTimeout(retryTimer);
+
+    const thisNavigation = ++navigationId;
+    const expectedPath = getRepositoryPath();
+
+    const attemptMove = (remaining) => {
+      if (
+        thisNavigation !== navigationId ||
+        !isRepoHome() ||
+        getRepositoryPath() !== expectedPath
+      ) {
+        return;
+      }
+
+      if (moveReadme()) return;
+
+      if (remaining > 0) {
+        retryTimer = setTimeout(() => attemptMove(remaining - 1), delay);
+      }
+    };
+
+    requestAnimationFrame(() => attemptMove(attempts));
+  }
+
+  function handleNavigation() {
+    scheduleMoveWithRetry();
+  }
+
+  document.addEventListener("turbo:load", handleNavigation);
+  document.addEventListener("turbo:render", scheduleMove);
+  document.addEventListener("pjax:end", handleNavigation);
+  window.addEventListener("pageshow", handleNavigation);
+
+  const observer = new MutationObserver(() => {
+    if (!isRepoHome() || observerTimer) return;
+
+    observerTimer = setTimeout(() => {
+      observerTimer = null;
+
+      const filesTable = getFilesTable();
+      const readmeBlock = getReadmeBlock();
+
+      if (!filesTable || !readmeBlock) {
+        scheduleMoveWithRetry({ attempts: 5, delay: 150 });
+        return;
+      }
+
+      scheduleMove();
+    }, 100);
+  });
+
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
 
-  document.addEventListener("turbo:render", scheduleMove);
-  document.addEventListener("pjax:end", scheduleMove);
-  window.addEventListener("pageshow", scheduleMove);
-
-  scheduleMove();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", handleNavigation, {
+      once: true,
+    });
+  } else {
+    handleNavigation();
+  }
 })();
