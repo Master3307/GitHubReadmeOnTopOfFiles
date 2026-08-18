@@ -9,4 +9,4 @@
 
 <strong>📦・Related</strong>
 - [GitHub Repo Card In About Sidebar](https://github.com/Master3307/GitHubRepoCardInAboutSidebar)
-- [GitHub Files Beside Readme (Experimental)](https://github.com/Master3307/GitHubFilesBesideReadme
+- [GitHub Files Beside Readme (Experimental)](https://github.com/Master3307/GitHubFilesBesideReadme)
