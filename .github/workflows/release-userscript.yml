@@ -143,29 +143,104 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           declare -A version_commit
+          declare -A version_path
           declare -A version_content
           declare -A version_seen
           versions=()
 
-          # Oldest to newest: first commit containing a version becomes that version's release target.
-          mapfile -t commits < <(git log --follow --reverse --format='%H' -- "$REPO_PATH")
+          # --follow traces the current file backward through renames.
+          # --name-status supplies the old and new path at rename commits.
+          # The parser emits: <commit><US><path valid in that commit>.
+          # --reverse makes the first matching commit for a version its release target.
+          separator=$'\x1f'
 
-          for commit in "${commits[@]}"; do
-            content="$(git show "${commit}:${REPO_PATH}" 2>/dev/null || true)"
+          mapfile -t history < <(
+            git log \
+              --follow \
+              -M \
+              --reverse \
+              --format="${separator}%H" \
+              --name-status \
+              -- "$REPO_PATH" |
+            awk -v sep="$separator" '
+              function emit() {
+                if (commit != "" && path != "") {
+                  print commit sep path
+                }
+              }
+
+              index($0, sep) == 1 {
+                emit()
+                commit = substr($0, 2)
+                path = ""
+                next
+              }
+
+              /^R[0-9]*\t/ {
+                # Rename rows are: R<score><TAB>old-path<TAB>new-path.
+                # In chronological traversal, a commit contains the new path;
+                # then use the old path for earlier history until another rename.
+                count = split($0, fields, "\t")
+                if (count >= 3) {
+                  path = fields[3]
+                }
+                next
+              }
+
+              /^[AMCT][0-9]*\t/ {
+                count = split($0, fields, "\t")
+                if (count >= 2) {
+                  path = fields[count]
+                }
+                next
+              }
+
+              /^D\t/ {
+                # A delete has no file snapshot in this commit. The prior
+                # rename record normally supplies the historical path.
+                next
+              }
+            '
+          )
+
+          if [ "${#history[@]}" -eq 0 ]; then
+            echo "Could not find file history for $REPO_PATH."
+            exit 1
+          fi
+
+          for entry in "${history[@]}"; do
+            commit="${entry%%"$separator"*}"
+            historical_path="${entry#*"$separator"}"
+
+            # Read the file from the path it had in this particular commit.
+            content="$(git show "${commit}:${historical_path}" 2>/dev/null || true)"
             [ -n "$content" ] || continue
+
+            # A historical file is only eligible if this exact revision still
+            # contains a userscript metadata header; a matching filename alone
+            # is never considered sufficient.
             grep -q '^// ==UserScript==$' <<< "$content" || continue
 
-            version="$(sed -nE 's|^[[:space:]]*//[[:space:]]*@version[[:space:]]+([^[:space:]]+).*|\1|p' <<< "$content" | head -n 1)"
+            version="$(
+              sed -nE \
+                's|^[[:space:]]*//[[:space:]]*@version[[:space:]]+([^[:space:]]+).*|\1|p' \
+                <<< "$content" |
+              head -n 1
+            )"
+
             [ -n "$version" ] || continue
 
             if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
-              echo "Skipping historical commit $commit: invalid version '$version'."
+              echo "Skipping historical commit $commit at $historical_path: invalid version '$version'."
               continue
             fi
 
+            # History is oldest-to-newest, so this is the first committed state
+            # that declares this version.
             if [[ -z "${version_seen[$version]+x}" ]]; then
               version_seen["$version"]=1
               version_commit["$version"]="$commit"
+              version_path["$version"]="$historical_path"
               version_content["$version"]="$content"
               versions+=("$version")
             fi
@@ -180,19 +255,23 @@ jobs:
           {
             echo "## Userscript historical backfill"
             echo
-            echo "- Source file: \`$ORIGINAL_NAME\`"
+            echo "- Current source file: \`$ORIGINAL_NAME\`"
             echo "- Release asset: \`$RELEASE_NAME\`"
+            echo "- Rename tracking: enabled"
+            echo "- Eligibility: historical file must contain a userscript header"
             echo "- Selection policy: first commit that declares each version"
             echo "- Dry run: \`$DRY_RUN\`"
             echo "- Maximum releases: \`$BACKFILL_LIMIT\`"
             echo
           } > "$summary_file"
 
-          # Versions were discovered oldest-to-newest. Process them newest-to-oldest,
-          # so a limit prioritizes recent missing releases while retaining correct targets.
+          # The versions were discovered oldest-to-newest. Process the newest
+          # first so a limit prioritizes recent missing releases, while tags
+          # still point to the first commit declaring their version.
           for ((index=${#versions[@]} - 1; index>=0; index--)); do
             version="${versions[$index]}"
             commit="${version_commit[$version]}"
+            historical_path="${version_path[$version]}"
             content="${version_content[$version]}"
             tag="v$version"
 
@@ -204,22 +283,28 @@ jobs:
 
             git fetch --force --tags origin
             existing_tag_commit=""
+
             if git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
               existing_tag_commit="$(git rev-list -n 1 "$tag")"
+
               if [ "$existing_tag_commit" != "$commit" ]; then
-                echo "- Conflict \`$tag\`: existing tag points to \`$existing_tag_commit\`, but this backfill expects \`$commit\`." >> "$summary_file"
+                echo "- Conflict \`$tag\`: existing tag points to \`$existing_tag_commit\`, but this backfill expects \`$commit\` from \`$historical_path\`." >> "$summary_file"
                 conflicts=$((conflicts + 1))
                 continue
               fi
             fi
 
             planned=$((planned + 1))
+
             if [ "$DRY_RUN" = "true" ]; then
               if [ -n "$existing_tag_commit" ]; then
                 echo "- Would create release \`$tag\` from existing matching tag at \`$commit\`." >> "$summary_file"
               else
                 echo "- Would create tag and release \`$tag\` at \`$commit\`." >> "$summary_file"
               fi
+
+              echo "  Historical source path: \`$historical_path\`" >> "$summary_file"
+              echo "  Published asset name: \`$RELEASE_NAME\`" >> "$summary_file"
             else
               if [ -z "$existing_tag_commit" ]; then
                 git tag -a "$tag" "$commit" -m "Release $tag"
@@ -236,7 +321,8 @@ jobs:
                 echo "Historical backfill release created from commit \`$commit\`."
                 echo
                 echo "- Script file: \`$RELEASE_NAME\`"
-                echo "- Source file: \`$ORIGINAL_NAME\`"
+                echo "- Historical source path: \`$historical_path\`"
+                echo "- Current source path: \`$REPO_PATH\`"
                 echo "- Version: \`$version\`"
                 echo "- Release target: first commit declaring this version"
               } > "$notes_file"
@@ -248,7 +334,9 @@ jobs:
                 "${tmp_asset}#${RELEASE_NAME}"
 
               rm -f "$tmp_asset" "$notes_file"
+
               echo "- Created \`$tag\` at \`$commit\`." >> "$summary_file"
+              echo "  Historical source path: \`$historical_path\`" >> "$summary_file"
               created=$((created + 1))
             fi
 
@@ -323,6 +411,7 @@ jobs:
               echo "Bump @version before releasing a different commit."
               exit 1
             fi
+
             echo "created=false" >> "$GITHUB_OUTPUT"
           else
             git tag -a "$TAG" "$expected_commit" -m "Release $TAG"
