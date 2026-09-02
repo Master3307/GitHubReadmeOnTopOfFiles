@@ -129,6 +129,7 @@ jobs:
           RELEASE_NAME: ${{ steps.detect.outputs.release_name }}
           BACKFILL_LIMIT: ${{ inputs.backfill_limit }}
           DRY_RUN: ${{ inputs.dry_run }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -146,8 +147,8 @@ jobs:
           declare -A version_seen
           versions=()
 
-          # Git walks backwards so --follow can resolve older filenames. Each
-          # record contains a commit and the path Git associates with it.
+          # Git walks backwards so --follow can resolve previous filenames.
+          # Each record contains a commit and the file path valid in that commit.
           separator=$'\x1f'
 
           mapfile -t history_newest_first < <(
@@ -186,8 +187,8 @@ jobs:
             exit 1
           fi
 
-          # Reverse Git's fully resolved list. This gives oldest-to-newest
-          # processing without breaking rename tracking.
+          # Reverse Git's resolved rename history after collection. This allows
+          # version targets to be selected from oldest to newest.
           history=()
           for ((index=${#history_newest_first[@]} - 1; index>=0; index--)); do
             history+=("${history_newest_first[$index]}")
@@ -200,8 +201,7 @@ jobs:
             content="$(git show "${commit}:${historical_path}" 2>/dev/null || true)"
             [ -n "$content" ] || continue
 
-            # A historical file qualifies only when this exact file revision
-            # contains a userscript metadata block.
+            # The historical file must itself be a userscript at this commit.
             grep -q '^// ==UserScript==$' <<< "$content" || continue
 
             version="$(
@@ -218,8 +218,7 @@ jobs:
               continue
             fi
 
-            # The history is oldest-to-newest, so retain the first commit that
-            # declares every version as its release target.
+            # Keep the first commit that declares each version.
             if [[ -z "${version_seen[$version]+x}" ]]; then
               version_seen["$version"]=1
               version_commit["$version"]="$commit"
@@ -242,12 +241,12 @@ jobs:
             echo "- Dry run: \`$DRY_RUN\`"
             echo "- Maximum releases: \`$BACKFILL_LIMIT\`"
             echo "- Order: oldest version to newest version"
-            echo "- Latest release: never changed by historical backfill"
+            echo "- Latest release: preserved; historical releases are never Latest"
             echo
           } > "$summary_file"
 
-          # Backfill in historical order. This lets each release use the
-          # previously created historical tag for an accurate changelog range.
+          # Historical versions are emitted in oldest-to-newest order. Every
+          # backfilled release is explicitly marked non-latest.
           for ((index=0; index<${#versions[@]}; index++)); do
             version="${versions[$index]}"
             commit="${version_commit[$version]}"
@@ -294,7 +293,7 @@ jobs:
               echo
               if [ -n "$previous_tag" ]; then
                 echo
-                echo "**Full Changelog**: ${previous_tag}...${tag}"
+                echo "**Full Changelog**: ${REPOSITORY_URL}/compare/${previous_tag}...${tag}"
               fi
             } > "$notes_file"
 
@@ -313,8 +312,6 @@ jobs:
               tmp_asset="$(mktemp --suffix=.user.js)"
               printf '%s\n' "$content" > "$tmp_asset"
 
-              # Historical releases must never become the repository's Latest
-              # release, even though they are being created today.
               gh release create "$tag" \
                 --title "$tag" \
                 --notes-file "$notes_file" \
@@ -415,6 +412,7 @@ jobs:
         id: notes
         env:
           CURRENT_TAG: ${{ steps.detect.outputs.tag }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -435,7 +433,7 @@ jobs:
             echo
             if [ -n "$previous_tag" ]; then
               echo
-              echo "**Full Changelog**: ${previous_tag}...${CURRENT_TAG}"
+              echo "**Full Changelog**: [${REPOSITORY_URL}/compare/${previous_tag}...${CURRENT_TAG}](${REPOSITORY_URL}/compare/${previous_tag}...${CURRENT_TAG})"
             fi
           } > "$notes_file"
 
