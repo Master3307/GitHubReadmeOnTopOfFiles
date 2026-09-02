@@ -178,7 +178,7 @@ jobs:
             echo
             if [ -n "$previous_tag" ]; then
               echo
-              echo "**Full Changelog**: [${REPOSITORY_URL}/compare/${previous_tag}...${CURRENT_TAG}](${REPOSITORY_URL}/compare/${previous_tag}...${CURRENT_TAG})"
+              echo "**Full Changelog**: ${REPOSITORY_URL}/compare/${previous_tag}...${CURRENT_TAG}"
             fi
           } > "$notes_file"
 
