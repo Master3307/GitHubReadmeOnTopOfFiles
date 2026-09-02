@@ -148,19 +148,18 @@ jobs:
           declare -A version_seen
           versions=()
 
-          # --follow traces the current file backward through renames.
-          # --name-status supplies the old and new path at rename commits.
-          # The parser emits: <commit><US><path valid in that commit>.
-          # --reverse makes the first matching commit for a version its release target.
+          # Git must traverse backwards for --follow to detect earlier names.
+          # Do not use --reverse with --follow; it can give incomplete output
+          # for files that have been renamed. Each record emitted below contains
+          # a commit and the file path Git associated with that exact commit.
           separator=$'\x1f'
 
-          mapfile -t history < <(
+          mapfile -t history_newest_first < <(
             git log \
               --follow \
               -M \
-              --reverse \
               --format="${separator}%H" \
-              --name-status \
+              --name-only \
               -- "$REPO_PATH" |
             awk -v sep="$separator" '
               function emit() {
@@ -176,49 +175,41 @@ jobs:
                 next
               }
 
-              /^R[0-9]*\t/ {
-                # Rename rows are: R<score><TAB>old-path<TAB>new-path.
-                # In chronological traversal, a commit contains the new path;
-                # then use the old path for earlier history until another rename.
-                count = split($0, fields, "\t")
-                if (count >= 3) {
-                  path = fields[3]
-                }
-                next
+              NF && path == "" {
+                path = $0
               }
 
-              /^[AMCT][0-9]*\t/ {
-                count = split($0, fields, "\t")
-                if (count >= 2) {
-                  path = fields[count]
-                }
-                next
-              }
-
-              /^D\t/ {
-                # A delete has no file snapshot in this commit. The prior
-                # rename record normally supplies the historical path.
-                next
+              END {
+                emit()
               }
             '
           )
 
-          if [ "${#history[@]}" -eq 0 ]; then
+          if [ "${#history_newest_first[@]}" -eq 0 ]; then
             echo "Could not find file history for $REPO_PATH."
             exit 1
           fi
+
+          # Git resolved rename history newest-to-oldest. Reverse that complete
+          # commit/path list in Bash, so first occurrences of versions are found
+          # oldest-to-newest without breaking rename tracking.
+          history=()
+          for ((index=${#history_newest_first[@]} - 1; index>=0; index--)); do
+            history+=("${history_newest_first[$index]}")
+          done
 
           for entry in "${history[@]}"; do
             commit="${entry%%"$separator"*}"
             historical_path="${entry#*"$separator"}"
 
-            # Read the file from the path it had in this particular commit.
+            # Read the source from the exact path it had in this commit. This
+            # supports, for example, something.userscript.js before it became
+            # ssomething.user.js.
             content="$(git show "${commit}:${historical_path}" 2>/dev/null || true)"
             [ -n "$content" ] || continue
 
-            # A historical file is only eligible if this exact revision still
-            # contains a userscript metadata header; a matching filename alone
-            # is never considered sufficient.
+            # A historical entry is eligible only if this specific revision is
+            # actually a userscript. Its filename alone never makes it eligible.
             grep -q '^// ==UserScript==$' <<< "$content" || continue
 
             version="$(
@@ -235,8 +226,8 @@ jobs:
               continue
             fi
 
-            # History is oldest-to-newest, so this is the first committed state
-            # that declares this version.
+            # The list is oldest-to-newest, so retain the first commit that
+            # declares each version as that version's historical release target.
             if [[ -z "${version_seen[$version]+x}" ]]; then
               version_seen["$version"]=1
               version_commit["$version"]="$commit"
@@ -265,9 +256,9 @@ jobs:
             echo
           } > "$summary_file"
 
-          # The versions were discovered oldest-to-newest. Process the newest
-          # first so a limit prioritizes recent missing releases, while tags
-          # still point to the first commit declaring their version.
+          # Versions were discovered oldest-to-newest. Process newest first so
+          # the backfill limit prioritizes the newest missing releases, while
+          # still tagging each version's first declaring commit.
           for ((index=${#versions[@]} - 1; index>=0; index--)); do
             version="${versions[$index]}"
             commit="${version_commit[$version]}"
