@@ -5,7 +5,6 @@ on:
     branches:
       - main
       - master
-
   workflow_dispatch:
     inputs:
       mode:
@@ -16,13 +15,11 @@ on:
         options:
           - release-current
           - backfill-missing
-
       backfill_limit:
         description: "Maximum number of missing historical releases to create"
         required: false
         default: "10"
         type: string
-
       dry_run:
         description: "Preview backfill actions without creating tags or releases"
         required: false
@@ -57,7 +54,6 @@ jobs:
 
           matches=()
 
-          # Prefer *.user.js files.
           for file in ./*.user.js; do
             [ -f "$file" ] || continue
             if grep -q '^// ==UserScript==$' "$file"; then
@@ -65,7 +61,6 @@ jobs:
             fi
           done
 
-          # Fall back to root-level .js files with a userscript header.
           for file in ./*.js; do
             [ -f "$file" ] || continue
             [[ "$file" == *.user.js ]] && continue
@@ -80,21 +75,13 @@ jobs:
           fi
 
           if [ "${#matches[@]}" -gt 1 ]; then
-            echo "More than one userscript file was found."
-            echo "Keep exactly one userscript in the repository root,"
-            echo "or change this workflow to use an explicit path."
+            echo "More than one userscript file was found. Keep exactly one userscript in the repository root or change this workflow to use an explicit path."
             printf 'Found: %s\n' "${matches[@]}"
             exit 1
           fi
 
           found="${matches[0]}"
-
-          version="$(
-            sed -nE \
-              's|^[[:space:]]*//[[:space:]]*@version[[:space:]]+([^[:space:]]+).*|\1|p' \
-              "$found" |
-            head -n 1
-          )"
+          version="$(sed -nE 's|^[[:space:]]*//[[:space:]]*@version[[:space:]]+([^[:space:]]+).*|\1|p' "$found" | head -n 1)"
 
           if [ -z "$version" ]; then
             echo "No @version found in $found"
@@ -102,13 +89,12 @@ jobs:
           fi
 
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid version '$version'. Expected SemVer-like version, e.g. 1.2.3."
+            echo "Invalid version '$version'. Expected a SemVer-like version such as 1.2.3."
             exit 1
           fi
 
           original_name="$(basename "$found")"
 
-          # A fallback file such as main.js is uploaded as main.user.js.
           if [[ "$original_name" == *.user.js ]]; then
             release_file="$found"
             release_name="$original_name"
@@ -160,10 +146,10 @@ jobs:
           declare -A version_seen
           versions=()
 
+          # Git walks backwards so --follow can resolve older filenames. Each
+          # record contains a commit and the path Git associates with it.
           separator=$'\x1f'
 
-          # --follow works backward in history. We record each commit and the
-          # matching historical path, including pre-rename file locations.
           mapfile -t history_newest_first < <(
             git log \
               --follow \
@@ -200,8 +186,8 @@ jobs:
             exit 1
           fi
 
-          # Reverse to oldest → newest. The first commit declaring a version
-          # is the commit tagged for that version.
+          # Reverse Git's fully resolved list. This gives oldest-to-newest
+          # processing without breaking rename tracking.
           history=()
           for ((index=${#history_newest_first[@]} - 1; index>=0; index--)); do
             history+=("${history_newest_first[$index]}")
@@ -214,6 +200,8 @@ jobs:
             content="$(git show "${commit}:${historical_path}" 2>/dev/null || true)"
             [ -n "$content" ] || continue
 
+            # A historical file qualifies only when this exact file revision
+            # contains a userscript metadata block.
             grep -q '^// ==UserScript==$' <<< "$content" || continue
 
             version="$(
@@ -226,10 +214,12 @@ jobs:
             [ -n "$version" ] || continue
 
             if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
-              echo "Skipping historical commit $commit: invalid version '$version'."
+              echo "Skipping historical commit $commit at $historical_path: invalid version '$version'."
               continue
             fi
 
+            # The history is oldest-to-newest, so retain the first commit that
+            # declares every version as its release target.
             if [[ -z "${version_seen[$version]+x}" ]]; then
               version_seen["$version"]=1
               version_commit["$version"]="$commit"
@@ -237,16 +227,6 @@ jobs:
               versions+=("$version")
             fi
           done
-
-          if [ "${#versions[@]}" -eq 0 ]; then
-            echo "No valid historical userscript versions were found."
-            exit 1
-          fi
-
-          # Lowest version → highest version: 1.0.9 comes before 1.0.10.
-          mapfile -t ordered_versions < <(
-            printf '%s\n' "${versions[@]}" | LC_ALL=C sort -V
-          )
 
           created=0
           skipped=0
@@ -258,15 +238,18 @@ jobs:
             echo "## Userscript historical backfill"
             echo
             echo "- Release asset: \`$RELEASE_NAME\`"
-            echo "- Release order: lowest version to highest version"
-            echo "- Historical releases forced not latest: \`true\`"
+            echo "- Rename tracking: enabled"
             echo "- Dry run: \`$DRY_RUN\`"
             echo "- Maximum releases: \`$BACKFILL_LIMIT\`"
+            echo "- Order: oldest version to newest version"
+            echo "- Latest release: never changed by historical backfill"
             echo
           } > "$summary_file"
 
-          for index in "${!ordered_versions[@]}"; do
-            version="${ordered_versions[$index]}"
+          # Backfill in historical order. This lets each release use the
+          # previously created historical tag for an accurate changelog range.
+          for ((index=0; index<${#versions[@]}; index++)); do
+            version="${versions[$index]}"
             commit="${version_commit[$version]}"
             content="${version_content[$version]}"
             tag="v$version"
@@ -294,7 +277,7 @@ jobs:
 
             previous_tag=""
             if [ "$index" -gt 0 ]; then
-              previous_tag="v${ordered_versions[$((index - 1))]}"
+              previous_tag="v${versions[$((index - 1))]}"
             fi
 
             notes_file="$(mktemp)"
@@ -302,16 +285,13 @@ jobs:
               echo "## What's changed"
               echo
 
-              if [ -n "$previous_tag" ] && git rev-parse -q --verify "refs/tags/$previous_tag^{commit}" >/dev/null 2>&1; then
+              if [ -n "$previous_tag" ]; then
                 git log "${previous_tag}..${commit}" --pretty=format:'- %s (%h)' || true
               else
                 git log "$commit" --pretty=format:'- %s (%h)' || true
               fi
 
               echo
-              echo
-              echo "Historical backfill release created from commit \`${commit}\`."
-
               if [ -n "$previous_tag" ]; then
                 echo
                 echo "**Full Changelog**: ${previous_tag}...${tag}"
@@ -320,9 +300,9 @@ jobs:
 
             if [ "$DRY_RUN" = "true" ]; then
               if [ -n "$existing_tag_commit" ]; then
-                echo "- Would create historical release \`$tag\` from tag at \`${commit:0:7}\` (**not latest**)." >> "$summary_file"
+                echo "- Would create release \`$tag\` from existing matching tag at \`${commit:0:7}\` (not Latest)." >> "$summary_file"
               else
-                echo "- Would create tag and historical release \`$tag\` at \`${commit:0:7}\` (**not latest**)." >> "$summary_file"
+                echo "- Would create tag and release \`$tag\` at \`${commit:0:7}\` (not Latest)." >> "$summary_file"
               fi
             else
               if [ -z "$existing_tag_commit" ]; then
@@ -333,24 +313,17 @@ jobs:
               tmp_asset="$(mktemp --suffix=.user.js)"
               printf '%s\n' "$content" > "$tmp_asset"
 
-              # First request non-latest during release creation.
+              # Historical releases must never become the repository's Latest
+              # release, even though they are being created today.
               gh release create "$tag" \
                 --title "$tag" \
                 --notes-file "$notes_file" \
-                --verify-tag \
                 --latest=false \
+                --verify-tag \
                 "${tmp_asset}#${RELEASE_NAME}"
 
-              # Then enforce it via the API. This guards against GitHub CLI
-              # edge cases involving --latest=false and asset uploads.
-              gh api \
-                --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
-                -f make_latest=false >/dev/null
-
               rm -f "$tmp_asset"
-
-              echo "- Created historical release \`$tag\` at \`${commit:0:7}\` (**not latest**)." >> "$summary_file"
+              echo "- Created \`$tag\` at \`${commit:0:7}\` (not Latest)." >> "$summary_file"
               created=$((created + 1))
             fi
 
@@ -360,37 +333,6 @@ jobs:
               break
             fi
           done
-
-          # Choose the highest stable version from the userscript's history.
-          # Anything containing "-" is treated as a prerelease and excluded.
-          latest_stable_version=""
-
-          for version in "${ordered_versions[@]}"; do
-            if [[ "$version" != *-* ]]; then
-              latest_stable_version="$version"
-            fi
-          done
-
-          if [ -n "$latest_stable_version" ]; then
-            latest_tag="v$latest_stable_version"
-
-            if [ "$DRY_RUN" = "true" ]; then
-              if gh release view "$latest_tag" >/dev/null 2>&1; then
-                echo "- Would ensure \`$latest_tag\` is marked **Latest**." >> "$summary_file"
-              else
-                echo "- \`$latest_tag\` has no release in this limited run; no release would be marked Latest." >> "$summary_file"
-              fi
-            elif gh release view "$latest_tag" >/dev/null 2>&1; then
-              gh api \
-                --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/tags/${latest_tag}" \
-                -f make_latest=true >/dev/null
-
-              echo "- Marked \`$latest_tag\` as **Latest**." >> "$summary_file"
-            else
-              echo "- \`$latest_tag\` has no release; no release was marked Latest." >> "$summary_file"
-            fi
-          fi
 
           {
             echo
@@ -454,8 +396,7 @@ jobs:
 
           if [ "$TAG_EXISTS" = "true" ]; then
             if [ "$TAG_COMMIT" != "$expected_commit" ]; then
-              echo "Tag $TAG already exists at $TAG_COMMIT,"
-              echo "but this workflow is releasing $expected_commit."
+              echo "Tag $TAG already exists at $TAG_COMMIT, but this workflow is releasing $expected_commit."
               echo "Bump @version before releasing a different commit."
               exit 1
             fi
@@ -470,21 +411,15 @@ jobs:
           echo "commit=$expected_commit" >> "$GITHUB_OUTPUT"
 
       - name: Build current release notes
-        id: notes
         if: (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release-current')) && steps.current.outputs.already_released == 'false'
+        id: notes
         env:
           CURRENT_TAG: ${{ steps.detect.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
 
-          previous_tag="$(
-            git tag --merged HEAD --sort=-version:refname |
-            grep -Fxv "$CURRENT_TAG" |
-            head -n 1 ||
-            true
-          )"
-
+          previous_tag="$(git tag --merged HEAD --sort=-version:refname | grep -Fxv "$CURRENT_TAG" | head -n 1 || true)"
           notes_file="$(mktemp)"
 
           {
@@ -498,15 +433,14 @@ jobs:
             fi
 
             echo
-            echo
-
             if [ -n "$previous_tag" ]; then
+              echo
               echo "**Full Changelog**: ${previous_tag}...${CURRENT_TAG}"
             fi
           } > "$notes_file"
 
           {
-            echo "content<<EOF"
+            echo "file<<EOF"
             cat "$notes_file"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -518,10 +452,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.detect.outputs.tag }}
-          VERSION: ${{ steps.detect.outputs.version }}
           RELEASE_NAME: ${{ steps.detect.outputs.release_name }}
           RELEASE_FILE: ${{ steps.detect.outputs.release_file }}
-          RELEASE_NOTES: ${{ steps.notes.outputs.content }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.file }}
         shell: bash
         run: |
           set -euo pipefail
@@ -529,54 +462,12 @@ jobs:
           notes_file="$(mktemp)"
           printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
 
-          # Determine the highest stable release currently published.
-          # This prevents an old branch/version from becoming Latest.
-          mapfile -t stable_versions < <(
-            gh release list \
-              --limit 1000 \
-              --json tagName,isPrerelease \
-              --jq '.[] | select(.isPrerelease == false) | .tagName' |
-            sed -nE 's/^v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' |
-            LC_ALL=C sort -V
-          )
-
-          highest_stable_version=""
-
-          for stable_version in "${stable_versions[@]}"; do
-            highest_stable_version="$stable_version"
-          done
-
-          current_version="${TAG#v}"
-          latest_value="false"
-
-          if [[ "$current_version" != *-* ]]; then
-            if [ -z "$highest_stable_version" ]; then
-              latest_value="true"
-            else
-              greatest_version="$(
-                printf '%s\n%s\n' "$highest_stable_version" "$current_version" |
-                LC_ALL=C sort -V |
-                tail -n 1
-              )"
-
-              if [ "$greatest_version" = "$current_version" ]; then
-                latest_value="true"
-              fi
-            fi
-          fi
-
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file "$notes_file" \
+            --latest=true \
             --verify-tag \
-            --latest="$latest_value" \
             "${RELEASE_FILE}#${RELEASE_NAME}"
-
-          # Explicitly enforce the intended state using GitHub's Releases API.
-          gh api \
-            --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
-            -f make_latest="$latest_value" >/dev/null
 
           rm -f "$notes_file"
 
@@ -598,10 +489,9 @@ jobs:
             echo "- Release asset: \`$RELEASE_NAME\`"
             echo "- Version: \`$VERSION\`"
             echo "- Tag: \`$TAG\`"
-
             if [ "$RELEASED" = "true" ]; then
               echo "- Result: release already existed; nothing was changed."
             else
-              echo "- Result: release created from \`${TAG_COMMIT:0:7}\`."
+              echo "- Result: release created from \`${TAG_COMMIT:0:7}\` and marked as Latest."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
