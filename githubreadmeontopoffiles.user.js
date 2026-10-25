@@ -1,32 +1,15 @@
 // ==UserScript==
 // @name         GitHub README before files
 // @namespace    https://github.com/
-// @version      6.0.0
+// @version      7.0.0
 // @author       MrKoby07
-// @description  Moves the entire rendered README section above the file list on GitHub repository home pages
+// @description  Displays the rendered README above the file list on GitHub repository home pages
 // @license      MIT
-// @match        https://github.com/*/*
-// @match        https://github.com/*/*/
-// @exclude      https://github.com/*/*/blob/*
-// @exclude      https://github.com/*/*/tree/*
-// @exclude      https://github.com/*/*/issues*
-// @exclude      https://github.com/*/*/pull*
-// @exclude      https://github.com/*/*/actions*
-// @exclude      https://github.com/*/*/projects*
-// @exclude      https://github.com/*/*/wiki*
-// @exclude      https://github.com/*/*/settings*
-// @exclude      https://github.com/*/*/security*
-// @exclude      https://github.com/*/*/network*
-// @exclude      https://github.com/*/*/stargazers*
-// @exclude      https://github.com/*/*/watchers*
-// @exclude      https://github.com/*/*/forks*
-// @exclude      https://github.com/*/*/releases*
-// @exclude      https://github.com/*/*/tags*
-// @exclude      https://github.com/*/*/commits*
-// @exclude      https://github.com/*/*/branches*
-// @exclude      https://github.com/*/*/compare/*
+// @match        https://github.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @homepageURL  https://github.com/Master3307/GitHubReadmeOnTopOfFiles
 // @supportURL   https://github.com/Master3307/GitHubReadmeOnTopOfFiles/issues
 // @icon         https://github.com/favicon.ico
@@ -37,309 +20,315 @@
 (() => {
   "use strict";
 
-  const RETRY_ATTEMPTS = 50;
-  const RETRY_DELAY_MS = 100;
+  // Keep the old key so existing preferences survive the update.
+  const TOGGLE_KEY = "move-file-browser-above-readme";
 
-  const FILES_CONTAINER_CLASS = "gh-readme-files-container";
-  const COMMIT_BAR_CLASS = "gh-readme-commit-bar";
-  const README_CLASS = "gh-readme-before-files";
-  const FILE_TABLE_CLASS = "gh-readme-file-table";
+  const ATTR = "data-gh-readme-layout";
+  const STYLE_ID = "gh-readme-before-files-style";
 
-  let retryTimer = null;
-  let observerTimer = null;
-  let navigationId = 0;
-  let scheduled = false;
+  let enabled = Boolean(GM_getValue(TOGGLE_KEY, true));
+  let timer = null;
+  let markedElements = new Map();
+
   const style = document.createElement("style");
+  style.id = STYLE_ID;
   style.textContent = `
     /*
-     * Visual order:
-     *
-     * repository toolbar
-     * latest commit / commit count
-     * README
-     *
-     * folders and files
+     * Flatten only the file-browser wrapper visually.
+     * All elements retain their original DOM parents.
      */
-    .${FILES_CONTAINER_CLASS} {
+    [${ATTR}="host"] {
       display: flex !important;
       flex-direction: column !important;
       gap: 0 !important;
     }
 
-    .${FILES_CONTAINER_CLASS} > .${COMMIT_BAR_CLASS} {
-      order: 1 !important;
+    [${ATTR}="browser"] {
+      display: contents !important;
     }
 
-    .${FILES_CONTAINER_CLASS} > .${README_CLASS} {
-      order: 2 !important;
-    }
-
-    .${FILES_CONTAINER_CLASS} > .${FILE_TABLE_CLASS} {
-      order: 3 !important;
-    }
-
-    /*
-     * The latest-commit bar visually joins the README card.
-     * It keeps the upper card corners, while its lower edge is square.
-     */
-    .${COMMIT_BAR_CLASS} {
+    [${ATTR}="commit"] {
+      order: 10 !important;
       margin: 0 !important;
       border-bottom-left-radius: 0 !important;
       border-bottom-right-radius: 0 !important;
     }
 
-    /*
-     * README continues directly below the commit bar.
-     * Its upper corners are removed so the two sections read as one card.
-     */
-    .${README_CLASS} {
-      position: relative !important;
-      z-index: 0 !important;
-      isolation: auto !important;
+    [${ATTR}="readme"] {
+      order: 20 !important;
+      min-width: 0 !important;
+      width: 100% !important;
       margin-top: 0 !important;
       margin-bottom: 0 !important;
+      position: relative !important;
+      z-index: auto !important;
+      isolation: auto !important;
       border-top-left-radius: 0 !important;
       border-top-right-radius: 0 !important;
     }
 
-    /*
-     * GitHub's README is composed of several nested card wrappers.
-     * Flatten their top corners to prevent double rounding below the commit bar.
-     */
-    .${README_CLASS} > [class*="OverviewRepoFiles-module__Box_2"],
-    .${README_CLASS} > [class*="OverviewRepoFiles-module__Box_2"] > *,
-    .${README_CLASS} [class*="OverviewRepoFiles-module__Box_3"] {
+    [${ATTR}="readme-card"],
+    [${ATTR}="readme-header"] {
       border-top-left-radius: 0 !important;
       border-top-right-radius: 0 !important;
     }
 
-    /*
-     * The file browser begins a distinct card after the README.
-     * Use GitHub's normal 16px spacing token, with a safe fallback.
-     */
-    .${FILE_TABLE_CLASS} {
-      margin-top: var(--base-size-7, 7px) !important;
+    [${ATTR}="heading"] {
+      order: 30 !important;
     }
 
-    /*
-     * Restore the file table's upper corners because it is no longer
-     * visually connected to the README panel.
-     */
-    .${FILE_TABLE_CLASS} > table {
+    [${ATTR}="files"] {
+      order: 40 !important;
+      min-width: 0 !important;
+      margin-top: var(--base-size-8, 8px) !important;
+    }
+
+    [${ATTR}="files"] table {
       margin-top: 0 !important;
       border-top-left-radius: var(--borderRadius-medium, 6px) !important;
       border-top-right-radius: var(--borderRadius-medium, 6px) !important;
-    }
-
-    /*
-     * Preserve full rounding for the bottom of the file-browser card.
-     */
-    .${FILE_TABLE_CLASS} > table:last-of-type {
       border-bottom-left-radius: var(--borderRadius-medium, 6px) !important;
       border-bottom-right-radius: var(--borderRadius-medium, 6px) !important;
     }
 
-    /*
-     * Keep GitHub menus, dialogs, dropdowns, and popovers above the
-     * repositioned README and file browser.
-     */
-    details[open] > details-menu,
-    details[open] > details-dialog,
-    details-menu,
-    details-dialog,
-    .Overlay,
-    .Popover,
-    [data-target="action-menu.menu"],
-    [popover]:popover-open,
-    [data-portal-root],
-    [data-target="portal-root"] {
-      z-index: 1000 !important;
+    [${ATTR}="after-files"] {
+      order: 50 !important;
     }
   `;
-  (document.head || document.documentElement).append(style);
 
   function isRepoHome() {
-    const parts = location.pathname
-      .replace(/^\/+|\/+$/g, "")
-      .split("/")
-      .filter(Boolean);
-
-    return location.hostname === "github.com" && parts.length === 2;
-  }
-
-  function getRepositoryPath() {
-    return location.pathname.replace(/\/$/, "");
-  }
-
-  function getReadmeBlock() {
-    const candidates = [
-      ...document.querySelectorAll('[class*="OverviewRepoFiles-module"]'),
-    ].filter((element) => element.querySelector("article.markdown-body"));
-
     return (
-      candidates.find(
-        (element) =>
-          !candidates.some(
-            (other) => other !== element && other.contains(element),
-          ),
-      ) || null
+      location.hostname === "github.com" &&
+      /^\/[^/]+\/[^/]+\/?$/.test(location.pathname)
     );
   }
 
-  function getBrowserContainer(readme) {
-    const heading = document.getElementById("folders-and-files");
+  // Return the direct child of parent that contains node.
+  function directChild(parent, node) {
+    if (!parent || !node || parent === node) return null;
 
-    if (!heading || !readme?.parentElement) return null;
+    let current = node;
 
-    let node = heading;
-
-    while (node.parentElement && node.parentElement !== readme.parentElement) {
-      node = node.parentElement;
+    while (current && current.parentElement !== parent) {
+      current = current.parentElement;
     }
 
-    return node.parentElement === readme.parentElement ? node : null;
+    return current || null;
   }
 
-  function getCommitBar(browserContainer) {
-    return (
-      browserContainer.querySelector(
-        '[class*="DirectoryContent-module__Box_3"]',
-      ) ||
-      browserContainer
-        .querySelector('[data-testid="latest-commit"]')
-        ?.closest("div[data-hpc] > div") ||
-      null
+  function detectLayout() {
+    const root =
+      document.querySelector('react-app[app-name="code-view"]') ||
+      document.querySelector("#repo-content-pjax-container");
+
+    if (!root) return null;
+
+    const heading = root.querySelector("#folders-and-files");
+    const table = root.querySelector(
+      'table[aria-labelledby~="folders-and-files"]',
     );
-  }
+    const latestCommit = root.querySelector('[data-testid="latest-commit"]');
 
-  function getTableBlock(browserContainer) {
-    const heading = browserContainer.querySelector("#folders-and-files");
-    const table = browserContainer.querySelector(
-      'table[aria-labelledby="folders-and-files"]',
-    );
+    if (!heading || !table || !latestCommit) return null;
 
-    if (!heading || !table) return null;
+    // Find the smallest shared wrapper of the heading, table and commit.
+    let browser = heading.parentElement;
 
-    let block = browserContainer.querySelector(`:scope > .${FILE_TABLE_CLASS}`);
-
-    if (block) return block;
-
-    block = document.createElement("div");
-    block.className = FILE_TABLE_CLASS;
-
-    browserContainer.insertBefore(block, heading);
-    block.append(heading, table);
-
-    const dropzone = browserContainer.querySelector(
-      ":scope > document-dropzone",
-    );
-
-    if (dropzone) {
-      block.append(dropzone);
+    while (
+      browser &&
+      browser !== root &&
+      (!browser.contains(table) || !browser.contains(latestCommit))
+    ) {
+      browser = browser.parentElement;
     }
 
-    return block;
+    if (!browser || browser === root) return null;
+
+    const host = browser.parentElement;
+    if (!host) return null;
+
+    // Find the README branch beside the file browser, including its tabs.
+    const readme = Array.from(host.children).find(
+      (element) =>
+        element !== browser && element.querySelector("article.markdown-body"),
+    );
+
+    if (!readme) return null;
+
+    const commit = directChild(browser, latestCommit);
+    const files = directChild(browser, table);
+    const headingBlock = directChild(browser, heading);
+
+    if (
+      !commit ||
+      !files ||
+      !headingBlock ||
+      commit === files ||
+      commit === headingBlock ||
+      files === headingBlock
+    ) {
+      return null;
+    }
+
+    const article = readme.querySelector("article.markdown-body");
+
+    // Locate the card that contains both the README header and markdown.
+    // This avoids depending on GitHub's generated Box_* class names.
+    let contentBranch = article;
+    let card = null;
+
+    while (
+      contentBranch.parentElement &&
+      contentBranch.parentElement !== host
+    ) {
+      const parent = contentBranch.parentElement;
+
+      if (parent.children.length > 1) {
+        card = parent;
+        break;
+      }
+
+      contentBranch = parent;
+    }
+
+    const header =
+      card && card.firstElementChild !== contentBranch
+        ? card.firstElementChild
+        : null;
+
+    return {
+      host,
+      browser,
+      commit,
+      readme,
+      card,
+      header,
+      files,
+      heading: headingBlock,
+    };
   }
 
-  function insertReadmeAsSibling(browserContainer, readme, tableBlock) {
-    if (readme.parentElement === browserContainer) return true;
+  function restoreLayout() {
+    for (const [element, role] of markedElements) {
+      if (element.getAttribute(ATTR) === role) {
+        element.removeAttribute(ATTR);
+      }
+    }
 
-    browserContainer.insertBefore(readme, tableBlock);
-    return true;
+    markedElements.clear();
   }
 
   function applyLayout() {
-    if (!isRepoHome()) return false;
+    if (!enabled || !isRepoHome()) {
+      restoreLayout();
+      return;
+    }
 
-    const readme = getReadmeBlock();
-    const browserContainer = getBrowserContainer(readme);
+    const layout = detectLayout();
 
-    if (!readme || !browserContainer) return false;
+    if (!layout) {
+      restoreLayout();
+      return;
+    }
 
-    const commitBar = getCommitBar(browserContainer);
-    const tableBlock = getTableBlock(browserContainer);
+    const next = new Map();
 
-    if (!commitBar || !tableBlock) return false;
+    function mark(element, role) {
+      if (element) next.set(element, role);
+    }
 
-    insertReadmeAsSibling(browserContainer, readme, tableBlock);
+    mark(layout.host, "host");
+    mark(layout.browser, "browser");
+    mark(layout.commit, "commit");
+    mark(layout.readme, "readme");
+    mark(layout.files, "files");
+    mark(layout.heading, "heading");
 
-    browserContainer.classList.add(FILES_CONTAINER_CLASS);
-    commitBar.classList.add(COMMIT_BAR_CLASS);
-    readme.classList.add(README_CLASS);
-    tableBlock.classList.add(FILE_TABLE_CLASS);
+    // A node must not receive two different roles.
+    if (layout.card !== layout.readme) {
+      mark(layout.card, "readme-card");
+    }
 
-    return true;
+    mark(layout.header, "readme-header");
+
+    // Keep dropzones and other trailing browser elements after the files.
+    let passedFiles = false;
+
+    for (const child of layout.browser.children) {
+      if (child === layout.files) {
+        passedFiles = true;
+        continue;
+      }
+
+      if (passedFiles && !next.has(child)) {
+        mark(child, "after-files");
+      }
+    }
+
+    // Remove stale annotations after React replaces part of the page.
+    for (const [element, role] of markedElements) {
+      if (next.get(element) !== role && element.getAttribute(ATTR) === role) {
+        element.removeAttribute(ATTR);
+      }
+    }
+
+    for (const [element, role] of next) {
+      if (element.getAttribute(ATTR) !== role) {
+        element.setAttribute(ATTR, role);
+      }
+    }
+
+    markedElements = next;
   }
 
   function scheduleLayout() {
-    if (scheduled) return;
+    if (timer !== null) return;
 
-    scheduled = true;
+    timer = window.setTimeout(() => {
+      timer = null;
 
-    requestAnimationFrame(() => {
-      scheduled = false;
+      if (!style.isConnected) {
+        (document.head || document.documentElement).append(style);
+      }
+
       applyLayout();
-    });
+    }, 75);
   }
 
-  function scheduleLayoutWithRetry({
-    attempts = RETRY_ATTEMPTS,
-    delay = RETRY_DELAY_MS,
-  } = {}) {
-    clearTimeout(retryTimer);
+  GM_registerMenuCommand("Toggle README above files", () => {
+    enabled = !enabled;
+    GM_setValue(TOGGLE_KEY, enabled);
 
-    const thisNavigation = ++navigationId;
-    const expectedPath = getRepositoryPath();
-
-    const attempt = (remaining) => {
-      if (
-        thisNavigation !== navigationId ||
-        !isRepoHome() ||
-        getRepositoryPath() !== expectedPath
-      ) {
-        return;
-      }
-
-      if (applyLayout()) return;
-
-      if (remaining > 0) {
-        retryTimer = setTimeout(() => {
-          attempt(remaining - 1);
-        }, delay);
-      }
-    };
-
-    requestAnimationFrame(() => attempt(attempts));
-  }
-
-  function handleNavigation() {
-    scheduleLayoutWithRetry();
-  }
-
-  document.addEventListener("turbo:load", handleNavigation);
-  document.addEventListener("turbo:render", scheduleLayout);
-  document.addEventListener("pjax:end", handleNavigation);
-  window.addEventListener("pageshow", handleNavigation);
-
-  const observer = new MutationObserver(() => {
-    if (!isRepoHome() || observerTimer) return;
-
-    observerTimer = setTimeout(() => {
-      observerTimer = null;
+    if (enabled) {
       scheduleLayout();
-    }, 100);
+    } else {
+      restoreLayout();
+    }
   });
+
+  // Restore native presentation before Turbo stores its page snapshot.
+  document.addEventListener("turbo:before-cache", restoreLayout);
+
+  for (const event of [
+    "turbo:load",
+    "turbo:render",
+    "pjax:end",
+    "soft-nav:end",
+  ]) {
+    document.addEventListener(event, scheduleLayout);
+  }
+
+  window.addEventListener("pageshow", scheduleLayout);
+  window.addEventListener("popstate", scheduleLayout);
+
+  // Handles delayed rendering and React navigation without polling.
+  // Attribute changes made by this script do not trigger this observer.
+  const observer = new MutationObserver(scheduleLayout);
 
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", handleNavigation, {
-      once: true,
-    });
-  } else {
-    handleNavigation();
-  }
+  scheduleLayout();
 })();
